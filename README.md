@@ -65,10 +65,13 @@ ALIYUN_REGISTRY_PASSWORD
 | `[huayangtongxin]` | 段落头，之后的所有镜像都推到该命名空间 |
 | `--space=infra nginx` | 单行指定命名空间，优先级高于段落 |
 | `--platform=linux/arm64 nginx` | 指定架构，架构会作为前缀出现在镜像名前 |
+| `--tag=6897159 zlmediakit/zlmediakit@sha256:…` | 自定义目标 tag，覆盖镜像自带的 tag |
 | `k8s.gcr.io/kube-state-metrics/kube-state-metrics` | 从私有仓库拉取 |
 | `# 注释` | `#` 开头整行忽略 |
 
 `images.txt` 里必须有命名空间段落或 `--space=`，否则运行时会先做预检查并直接报错，不会推到一半才失败。
+
+**关于 tag**：不写 `--tag` 时，用镜像自带的 tag；镜像本身没有 tag（例如只给了 digest）就补 `:latest`。digest 引用建议配 `--tag=`，否则每次换 digest 都只是覆盖同一个 `latest`，无法回溯是哪个版本。
 
 ![](doc/images.png)
 

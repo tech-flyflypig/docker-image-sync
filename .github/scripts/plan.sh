@@ -8,7 +8,8 @@
 # images.txt 语法：
 #   [命名空间]                     段落头，之后所有镜像推到该命名空间
 #   --space=xxx 镜像               单行指定命名空间，优先级高于段落
-#   --platform=linux/arm64 镜像    指定架构
+#   --platform=linux/arm64 镜像    指定架构（不写则整份 manifest list 一起搬）
+#   --tag=xxx 镜像                 自定义目标 tag（覆盖镜像自带的 tag，digest 引用推荐用这个）
 #   镜像[:tag]                     不写 tag 默认 latest
 #   # 注释
 
@@ -30,13 +31,14 @@ trim() {
 }
 
 # 解析一行
-# 输出: PULL_ARGS=() , PLATFORM , SPACE , IMAGE
+# 输出: PULL_ARGS=() , PLATFORM , SPACE , TAG , IMAGE
 parse_line() {
     local -a tokens
     read -r -a tokens <<< "$1"
     PULL_ARGS=()
     PLATFORM=""
     SPACE=""
+    TAG=""
     IMAGE=""
     local i=0 n=${#tokens[@]} t
     while [ "$i" -lt "$n" ]; do
@@ -47,6 +49,12 @@ parse_line() {
                 ;;
             --space=*|--namespace=*)
                 SPACE="${t#*=}"
+                ;;
+            --tag)
+                i=$((i + 1)); TAG="${tokens[$i]:-}"
+                ;;
+            --tag=*)
+                TAG="${t#*=}"
                 ;;
             --platform)
                 PULL_ARGS+=("$t")
@@ -120,6 +128,10 @@ while next_entry; do
         echo "::error::$ENTRY 含有非法字符（常见原因：全角空格、中文标点、行内多余空格）"
         bad=$((bad + 1))
     fi
+    if [ -n "$TAG" ] && ! [[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+        echo "::error::$ENTRY 的 --tag '$TAG' 不合法（只允许字母、数字、下划线、点、短划线，且不能以点或短划线开头）"
+        bad=$((bad + 1))
+    fi
 done
 exec 3<&-
 if [ "$bad" -gt 0 ]; then
@@ -160,11 +172,15 @@ while next_entry; do
     space="${SPACE:-$current_space}"
     split_image "$IMAGE"
 
-    # 未写 tag 时补 :latest
-    case "$IMAGE_NAME_TAG" in
-        *:*) ;;
-        *) IMAGE_NAME_TAG="${IMAGE_NAME_TAG}:latest" ;;
-    esac
+    # 目标 tag：--tag 优先，其次镜像自带的 tag，都没有就 latest
+    if [ -n "$TAG" ]; then
+        IMAGE_NAME_TAG="${IMAGE_NAME}:${TAG}"
+    else
+        case "$IMAGE_NAME_TAG" in
+            *:*) ;;
+            *) IMAGE_NAME_TAG="${IMAGE_NAME_TAG}:latest" ;;
+        esac
+    fi
 
     if [ -n "$PLATFORM" ]; then
         platform_prefix="${PLATFORM//\//_}_"
