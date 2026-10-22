@@ -110,22 +110,34 @@ jobs:
             return 1
         }
 
-        # ---- 已存在且 digest 一致就跳过，省掉整次全量拉取 ----
+        # 写 job summary：$1=标题 $2=模式 $3=附加说明
+        summary() {
+            {
+                echo "### $1"
+                echo ""
+                echo "- 目标: \`$dst_ref\`"
+                if [ -n "${2:-}" ]; then echo "- 模式: $2"; fi
+                if [ -n "${3:-}" ]; then echo "- $3"; fi
+                if [ -n "$src_digest" ]; then echo "- 源 digest: \`$src_digest\`"; fi
+            } >> "$GITHUB_STEP_SUMMARY"
+        }
+
+        # 列出 index 里各架构的子 manifest digest（排序后用空格连成一串，便于比较）
+        pdigests() {
+            python3 "$GITHUB_WORKSPACE/.github/scripts/index_platforms.py" "$1" \
+                | awk -F'|' '$1=="PF"{print $5}' | sort | tr '\n' ' '
+        }
+
+        # ---- 已存在且 index digest 一致就跳过，省掉整次全量拉取 ----
         src_digest="$(raw_digest "$src" || true)"
         dst_digest="$(raw_digest "$dst" --authfile "$authfile" || true)"
 
         echo "源 digest: ${src_digest:-<获取失败>}"
         echo "目标 digest: ${dst_digest:-<不存在或获取失败>}"
 
-        if [ -n "$src_digest" ] && [ -n "$dst_digest" ] && [ "$src_digest" = "$dst_digest" ]; then
+        if [ -n "$src_digest" ] && [ "$src_digest" = "$dst_digest" ]; then
             echo "目标已是最新，跳过: $dst"
-            {
-                echo "### ⏭️ $IMAGE"
-                echo ""
-                echo "- 已存在且 digest 一致，跳过"
-                echo "- 目标: \`$ALIYUN_REGISTRY/$TARGET\`"
-                echo "- digest: \`$src_digest\`"
-            } >> "$GITHUB_STEP_SUMMARY"
+            summary "⏭️ $IMAGE" "" "已存在且 digest 一致，跳过"
             exit 0
         fi
 
@@ -159,6 +171,7 @@ jobs:
             index_file="$(mktemp "$RUNNER_TEMP/index.XXXXXX")"
             att=0
             platforms=()
+            src_set=""
             if skopeo inspect --retry-times 3 --raw "$src" > "$index_file" 2>/dev/null; then
                 info="$(python3 "$GITHUB_WORKSPACE/.github/scripts/index_platforms.py" "$index_file")"
                 att="$(printf '%s\n' "$info" | awk -F'|' '$1=="ATT"{print $2; exit}')"
@@ -166,10 +179,26 @@ jobs:
                     [ "$tag" = "PF" ] || continue
                     platforms+=("$os|$arch|$variant|$dg")
                 done <<< "$info"
+                src_set="$(pdigests "$index_file")"
             fi
-            rm -f "$index_file"
 
             if [ "${att:-0}" -gt 0 ] && [ "${#platforms[@]}" -gt 0 ]; then
+                # 重建 index 时剔除了 attestation，digest 必然和源不同，
+                # 所以跳过判断改比「各架构子 manifest 的 digest 集合」
+                dst_index="$(mktemp "$RUNNER_TEMP/index.XXXXXX")"
+                dst_set=""
+                if skopeo inspect --retry-times 3 --raw --authfile "$authfile" "$dst" > "$dst_index" 2>/dev/null; then
+                    dst_set="$(pdigests "$dst_index")"
+                fi
+                rm -f "$dst_index"
+
+                if [ -n "$src_set" ] && [ "$src_set" = "$dst_set" ]; then
+                    echo "各架构 digest 与目标一致（只差 attestation），跳过: $dst"
+                    rm -f "$index_file"
+                    summary "⏭️ $IMAGE" "" "各架构 digest 一致（attestation 已剔除），跳过"
+                    exit 0
+                fi
+
                 echo "源镜像带 $att 个 attestation 清单，ACR 不接受，改为按架构复制后重建 index"
                 # buildx 走 docker 配置的凭据，这里补一次登录
                 if ! printf '%s' "$ALIYUN_REGISTRY_PASSWORD" | docker login -u "$ALIYUN_REGISTRY_USER" --password-stdin "$ALIYUN_REGISTRY" >/dev/null; then
@@ -210,16 +239,8 @@ jobs:
                 fi
                 mode="多架构（--all）"
             fi
+            rm -f "$index_file"
         fi
 
-        {
-            echo "### ✅ $IMAGE"
-            echo ""
-            echo "- 目标: \`$ALIYUN_REGISTRY/$TARGET\`"
-            echo "- 模式: $mode"
-            if [ -n "$src_digest" ]; then
-                echo "- digest: \`$src_digest\`"
-            fi
-        } >> "$GITHUB_STEP_SUMMARY"
-
+        summary "✅ $IMAGE" "$mode"
         rm -f "$authfile"
