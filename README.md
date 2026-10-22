@@ -162,6 +162,35 @@ on:
 
 ![](doc/定时执行.png)
 
+### 9. 并行搬运
+
+`images.txt` 里的镜像**每个都会开一个独立的 job 并行搬运**，不是串行排队：
+
+```
+plan job    →  解析 images.txt，做命名空间校验/重名检测，输出 matrix
+sync job ×N →  每个镜像一个 runner，各自扩容磁盘 + pull/tag/push
+```
+
+带来的好处：
+
+- 20 个镜像从「一个接一个」变成「同时进行」，整体耗时取决于最慢的那个
+- 某个镜像失败只让那一个 job 变红，其它镜像照常完成，Actions 页面上一眼能看出是哪个
+- 每个 job 独立 40GB 磁盘，大镜像和小镜像不会互相挤占
+
+两个可调项在 `.github/workflows/docker.yaml` 的 `sync` job 里：
+
+```yaml
+strategy:
+  fail-fast: false   # 一个失败不影响其他
+  max-parallel: 5    # 同时最多几个，阿里云限速或 runner 配额紧张就调小
+```
+
+解析逻辑单独放在 [.github/scripts/plan.sh](.github/scripts/plan.sh)，可以本地预览将要生成的矩阵：
+
+```bash
+bash .github/scripts/plan.sh
+```
+
 ## 常见问题
 
 - **拉取失败 `invalid reference format`**：多半是 `images.txt` 里多了不可见字符或全角空格，删掉重输即可
