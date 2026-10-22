@@ -51,25 +51,23 @@ jobs:
       max-parallel: 5
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
-    # 增加可用磁盘空间（v10 已验证支持下面这些入参）
-    - name: Maximize build space
-      uses: easimon/maximize-build-space@v10
-      with:
-
-        root-reserve-mb: 2048
-        swap-size-mb: 128
-        remove-dotnet: 'true'
-        remove-haskell: 'true'
-        # 如果空间还是不够用，可以把以下开启，清理出更多空间
-        # remove-android: 'true'
-        # remove-codeql: 'true'
-        build-mount-path: '/var/lib/docker/'
-
-    - name: Restart docker
-      run: sudo service docker restart
-
-    - name: Check disk
-      run: df -hT
+    # 现在的 ubuntu-latest 自带 /dev/root 145G、可用约 88G，
+    # 原来那套 maximize-build-space 会把根分区压到 2G，反而把 runner 自己写日志的空间挤爆
+    - name: Free disk space
+      run: |
+        echo "清理前："
+        df -h /
+        # 空间本来就够时这几条几乎无成本；真遇到小规格 runner 也能腾出十几 G
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+        docker image prune -af || true
+        echo "清理后："
+        df -h /
+        avail=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+        echo "根分区可用: ${avail}G"
+        if [ "$avail" -lt 5 ]; then
+          echo "::error::根分区可用空间不足 5G，大镜像可能失败"
+          exit 1
+        fi
 
     - name: Pull & Push
       env:

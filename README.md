@@ -3,7 +3,7 @@
 使用 GitHub Action 把国外的 Docker 镜像转存到阿里云容器镜像服务（ACR），国内服务器直接从阿里云拉取，免费、无需自己维护机器。
 
 - 支持 Docker Hub、gcr.io、ghcr.io、quay.io、k8s.io 等任意仓库
-- 支持最大 40GB 的大镜像（构建前自动扩容并逐个清理，不会撑爆 runner）
+- 支持 40GB 级的大镜像（runner 自带约 88G 可用空间，每个镜像搬完立即释放）
 - 一次运行可推送到**多个阿里云命名空间**，命名空间在 `images.txt` 里按段落/按行指定
 - 使用阿里云官方线路，国内拉取速度快
 
@@ -168,14 +168,14 @@ on:
 
 ```
 plan job    →  解析 images.txt，做命名空间校验/重名检测，输出 matrix
-sync job ×N →  每个镜像一个 runner，各自扩容磁盘 + pull/tag/push
+sync job ×N →  每个镜像一个 runner，各自清理磁盘 + pull/tag/push
 ```
 
 带来的好处：
 
 - 20 个镜像从「一个接一个」变成「同时进行」，整体耗时取决于最慢的那个
 - 某个镜像失败只让那一个 job 变红，其它镜像照常完成，Actions 页面上一眼能看出是哪个
-- 每个 job 独立 40GB 磁盘，大镜像和小镜像不会互相挤占
+- 每个 job 用独立 runner，磁盘互不挤占；某个镜像特别大也不会拖累其他镜像
 
 两个可调项在 `.github/workflows/docker.yaml` 的 `sync` job 里：
 
@@ -195,4 +195,4 @@ bash .github/scripts/plan.sh
 
 - **拉取失败 `invalid reference format`**：多半是 `images.txt` 里多了不可见字符或全角空格，删掉重输即可
 - **推送 403 / denied**：检查 Secrets 是否为该命名空间所属账号的凭证，以及 `ALIYUN_REGISTRY` 是否与命名空间对应
-- **磁盘不足**：镜像超过 40GB 时可以在 `maximize-build-space` 步骤里打开 `remove-android`、`remove-codeql`，或拆成多次运行
+- **磁盘不足**：run 日志里出现 `No space left on device` 时，先看 `Free disk space` 那步打印的可用空间；镜像特别大（>40G）可减少 `max-parallel`，或把镜像拆成多次运行
