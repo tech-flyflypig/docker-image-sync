@@ -1,11 +1,21 @@
+# 每个镜像必须指定目标命名空间：[命名空间] 段落 或 --space=xxx
+[huayangtongxin]
 alpine:3.24.1
 nginx:1.28.3-alpine
 redis:7.4.9-alpine
 livekit/livekit-server:v1.13.1
 golang:1.22-alpine
 node:20-alpine
-#支持私库
 
-#支持指定架构
-#--platform=linux/amd64 nginx
-
+# ===== 其他命名空间示例（取消注释即可生效） =====
+# [another-ns]
+# nginx:1.28.3-alpine
+#
+# 单行式：--space=xxx，优先级高于段落
+# --space=infra golang:1.22-alpine
+#
+# 支持私库
+# k8s.gcr.io/kube-state-metrics/kube-state-metrics
+#
+# 支持指定架构
+# --platform=linux/amd64 nginx
