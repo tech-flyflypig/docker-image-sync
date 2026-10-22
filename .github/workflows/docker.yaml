@@ -177,7 +177,12 @@ jobs:
                     exit 1
                 fi
 
+                # 引用子 manifest 时必须去掉 tag：skopeo 不接受「tag+digest」这种写法
+                # （只去掉最后一段里的 :tag，避免把 registry:5000 的端口当 tag 切掉）
                 repo="${IMAGE%%@*}"
+                if [[ "${repo##*/}" == *:* ]]; then
+                    repo="${repo%:*}"
+                fi
                 refs=()
                 for p in "${platforms[@]}"; do
                     IFS='|' read -r os arch variant dg <<< "$p"
