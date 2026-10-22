@@ -8,7 +8,8 @@
 # images.txt 语法：
 #   [命名空间]                     段落头，之后所有镜像推到该命名空间
 #   --space=xxx 镜像               单行指定命名空间，优先级高于段落
-#   --platform=linux/arm64 镜像    指定架构（不写则整份 manifest list 一起搬）
+#   --platform=linux/arm64 镜像    指定架构；不写默认只搬 linux/amd64，all=完整多架构
+#   --platform=linux/amd64,linux/arm64 镜像   只保留这几个架构的 index
 #   --tag=xxx 镜像                 自定义目标 tag（覆盖镜像自带的 tag，digest 引用推荐用这个）
 #   镜像[:tag]                     不写 tag 默认 latest
 #   # 注释
@@ -132,6 +133,15 @@ while next_entry; do
         echo "::error::$ENTRY 的 --tag '$TAG' 不合法（只允许字母、数字、下划线、点、短划线，且不能以点或短划线开头）"
         bad=$((bad + 1))
     fi
+    if [ -n "$PLATFORM" ] && [ "$PLATFORM" != "all" ]; then
+        IFS=',' read -r -a _plats <<< "$PLATFORM"
+        for _p in "${_plats[@]}"; do
+            if ! [[ "$_p" =~ ^[a-z0-9]+/[a-z0-9]+(/[a-z0-9]+)?$ ]]; then
+                echo "::error::$ENTRY 的 --platform '$_p' 不合法（写法：all 或 os/arch[/variant]）"
+                bad=$((bad + 1))
+            fi
+        done
+    fi
 done
 exec 3<&-
 if [ "$bad" -gt 0 ]; then
@@ -182,11 +192,28 @@ while next_entry; do
         esac
     fi
 
-    if [ -n "$PLATFORM" ]; then
-        platform_prefix="${PLATFORM//\//_}_"
-    else
-        platform_prefix=""
-    fi
+    # 平台：默认只搬 linux/amd64（名字不加前缀）
+    #   all                 → 完整 manifest list
+    #   a,b（逗号列表）      → 只保留这些架构的 index
+    #   单个非 amd64 架构    → 单架构，名字加架构前缀
+    case "$PLATFORM" in
+        "")
+            platform_spec="linux/amd64"
+            platform_prefix=""
+            ;;
+        all)
+            platform_spec="all"
+            platform_prefix=""
+            ;;
+        *,* | linux/amd64)
+            platform_spec="$PLATFORM"
+            platform_prefix=""
+            ;;
+        *)
+            platform_spec="$PLATFORM"
+            platform_prefix="${PLATFORM//\//_}_"
+            ;;
+    esac
 
     name_space_prefix=""
     if [ -n "${duplicate_images[${space}/${IMAGE_NAME}]:-}" ] && [ -n "$NAME_SPACE" ]; then
@@ -196,7 +223,7 @@ while next_entry; do
     target="${space}/${platform_prefix}${name_space_prefix}${IMAGE_NAME_TAG}"
 
     entries+=("$(printf '{"image":"%s","platform":"%s","space":"%s","target":"%s"}' \
-        "$IMAGE" "$PLATFORM" "$space" "$target")")
+        "$IMAGE" "$platform_spec" "$space" "$target")")
 done
 exec 3<&-
 

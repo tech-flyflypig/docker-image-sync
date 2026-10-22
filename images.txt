@@ -25,5 +25,7 @@ postgres:16-alpine
 # 支持私库
 # k8s.gcr.io/kube-state-metrics/kube-state-metrics
 #
-# 支持指定架构
-# --platform=linux/amd64 nginx
+# 默认只搬 linux/amd64，需要多架构时才加 --platform
+# --platform=all nginx                      # 全部架构
+# --platform=linux/amd64,linux/arm64 nginx  # 只要这两个
+# --platform=linux/arm64 nginx              # 只要 arm64（名字带 linux_arm64_ 前缀）

@@ -4,7 +4,7 @@
 
 - 支持 Docker Hub、gcr.io、ghcr.io、quay.io、k8s.io 等任意仓库
 - 用 skopeo 在仓库之间直接搬 blob，不落本地镜像，40GB 级镜像也不占磁盘
-- **保留多架构 manifest list**（`--all`），arm64 / amd64 都能从阿里云拉到
+- **默认只搬 `linux/amd64`**，省流量省空间；需要多架构时写 `--platform=all` 或 `--platform=linux/amd64,linux/arm64`
 - 目标已存在且 digest 一致时**自动跳过**，重复运行不浪费带宽
 - 一次运行可推送到**多个阿里云命名空间**，命名空间在 `images.txt` 里按段落/按行指定
 - 使用阿里云官方线路，国内拉取速度快
@@ -64,7 +64,7 @@ ALIYUN_REGISTRY_PASSWORD
 | `nginx:1.28.3-alpine` | 镜像名 + tag，不写 tag 默认 `latest` |
 | `[huayangtongxin]` | 段落头，之后的所有镜像都推到该命名空间 |
 | `--space=infra nginx` | 单行指定命名空间，优先级高于段落 |
-| `--platform=linux/arm64 nginx` | 指定架构，架构会作为前缀出现在镜像名前 |
+| `--platform=linux/arm64 nginx` | 指定架构（不写默认只搬 amd64），详见第 6 节 |
 | `--tag=6897159 zlmediakit/zlmediakit@sha256:…` | 自定义目标 tag，覆盖镜像自带的 tag |
 | `k8s.gcr.io/kube-state-metrics/kube-state-metrics` | 从私有仓库拉取 |
 | `# 注释` | `#` 开头整行忽略 |
@@ -126,17 +126,20 @@ golang:1.22-alpine
 - 所有命名空间必须在同一个仓库地址、同一套账号密码下（workflow 只登录一次）
 - 阿里云个人实例的命名空间数量有配额限制，需要多个命名空间请确认实例类型（企业版支持多命名空间）
 
-### 6. 多架构
+### 6. 架构
 
-**默认就是多架构**：`images.txt` 里不写 `--platform` 时，用 `skopeo copy --all` 把整份 manifest list 一起搬，amd64 / arm64 等都能从阿里云拉取，`docker pull` 会自动按机器架构选。
+**默认只搬 `linux/amd64`**：`images.txt` 里不写 `--platform` 时，只复制 amd64 那一份子 manifest，体积最小、速度最快，也顺手避开了 ACR 不认 attestation 清单的问题。
 
-只有在**只想保留某一个架构**（比如省空间、或者上游镜像特别大）时才写 `--platform`：
+需要其它架构时：
 
-```ini
---platform=linux/arm64 nginx:1.28.3-alpine
-```
+| 写法 | 结果 |
+| --- | --- |
+| `--platform=all nginx` | 完整 manifest list，所有架构都搬 |
+| `--platform=linux/amd64,linux/arm64 nginx` | 只保留这两个架构的干净 index |
+| `--platform=linux/arm64 nginx` | 只搬 arm64，名字带前缀 → `linux_arm64_nginx` |
+| `--platform=linux/arm/v7 nginx` | 带 variant 的写法，前缀 `linux_arm_v7_` |
 
-推送结果是 `linux_arm64_nginx:1.28.3-alpine`，单一架构、体积更小。也支持 `linux/arm/v7` 这种带 variant 的写法。
+注意：默认的 amd64 是**单架构镜像**，如果哪天有 ARM 机器或 Apple Silicon 拉同一个 tag，会报 `no matching manifest for linux/arm64`。这时候把那一行改成 `--platform=all` 或加上 arm64 再跑一次即可。
 
 ![](doc/多架构.png)
 
@@ -204,4 +207,4 @@ bash .github/scripts/plan.sh
 - **推送 403 / denied**：检查 Secrets 是否为该命名空间所属账号的凭证，以及 `ALIYUN_REGISTRY` 是否与命名空间对应
 - **每次都重新搬同一个镜像？** 正常情况下不会：目标 digest 与源一致会直接跳过；如果一直重复，说明上游 tag 内容真的变了，或者上一次推送被 ACR 拒绝
 - **`denied: unknown manifest class`**：源镜像带了 buildx 的 attestation 清单（`os=unknown`），阿里云 ACR 不接受这种清单。工具会自动降级：按架构逐个复制，再用 `docker buildx imagetools create` 重建一份干净的 manifest list，最终的镜像依然多架构可用
-- **`--platform` 和 `--all` 冲突？** 不会。写了 `--platform` 就只搬那一个架构，没写才整份 manifest list 一起搬
+- **默认只有 amd64？** 是的，为省带宽和省空间。需要多架构就把那行改成 `--platform=all`（全部）或 `--platform=linux/amd64,linux/arm64`（只要这两个），重跑一次即覆盖
