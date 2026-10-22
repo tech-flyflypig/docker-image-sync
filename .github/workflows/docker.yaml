@@ -138,19 +138,6 @@ jobs:
             return 1
         }
 
-        src_digest="$(raw_digest "$src" || true)"
-        dst_digest="$(raw_digest "$dst" --authfile "$authfile" || true)"
-
-        echo "源 digest: ${src_digest:-<获取失败>}"
-        echo "目标 digest: ${dst_digest:-<不存在或获取失败>}"
-
-        if [ -n "$src_digest" ] && [ "$src_digest" = "$dst_digest" ]; then
-            echo "目标已是最新，跳过: $dst"
-            summary "⏭️ $IMAGE" "" "已存在且 digest 一致，跳过"
-            rm -f "$authfile"
-            exit 0
-        fi
-
         # ===== 单架构：skopeo 直接按平台取子 manifest =====
         if [ "$MODE" = "single" ]; then
             os="${PLATFORM%%/*}"
@@ -160,16 +147,48 @@ jobs:
             if [ "$rest" != "$arch" ]; then
                 variant="${rest#*/}"
             fi
-            copy_args=(--authfile "$authfile" --retry-times 3 --override-os "$os" --override-arch "$arch")
+
+            override_args=(--override-os "$os" --override-arch "$arch")
             if [ -n "$variant" ]; then
-                copy_args+=(--override-variant "$variant")
+                override_args+=(--override-variant "$variant")
             fi
+
+            # 这里要拿「该架构子 manifest」的 digest 来比：
+            # 源是 index、目标是单架构 manifest，两者顶层 digest 永远不同，
+            # 直接用顶层 digest 比会导致每次运行都重搬。
+            src_digest="$(raw_digest "$src" "${override_args[@]}" || true)"
+            dst_digest="$(raw_digest "$dst" --authfile "$authfile" || true)"
+            echo "源 digest($PLATFORM): ${src_digest:-<获取失败>}"
+            echo "目标 digest: ${dst_digest:-<不存在或获取失败>}"
+
+            if [ -n "$src_digest" ] && [ "$src_digest" = "$dst_digest" ]; then
+                echo "目标已是最新，跳过: $dst"
+                summary "⏭️ $IMAGE" "单架构 $PLATFORM" "该架构 digest 一致，跳过"
+                rm -f "$authfile"
+                exit 0
+            fi
+
+            copy_args=(--authfile "$authfile" --retry-times 3 "${override_args[@]}")
             echo "skopeo copy ${copy_args[*]} $src $dst"
             if ! skopeo copy "${copy_args[@]}" "$src" "$dst"; then
                 echo "::error::搬运失败: $IMAGE -> $dst_ref"
                 exit 1
             fi
             summary "✅ $IMAGE" "单架构 $PLATFORM"
+            rm -f "$authfile"
+            exit 0
+        fi
+
+        # ---- index 模式：顶层 digest 一致就跳过，省掉整次拉取 ----
+        src_digest="$(raw_digest "$src" || true)"
+        dst_digest="$(raw_digest "$dst" --authfile "$authfile" || true)"
+
+        echo "源 digest: ${src_digest:-<获取失败>}"
+        echo "目标 digest: ${dst_digest:-<不存在或获取失败>}"
+
+        if [ -n "$src_digest" ] && [ "$src_digest" = "$dst_digest" ]; then
+            echo "目标已是最新，跳过: $dst"
+            summary "⏭️ $IMAGE" "" "已存在且 digest 一致，跳过"
             rm -f "$authfile"
             exit 0
         fi
