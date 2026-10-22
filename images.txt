@@ -8,6 +8,10 @@ golang:1.22-alpine
 node:20-alpine
 zlmediakit/zlmediakit@sha256:6897159b6232375e907d481ffcda6d121b0c8e33f2e85fbce9265e1090edc033
 
+[hqtech]
+postgres:16-alpine
+zlmediakit/zlmediakit@sha256:6897159b6232375e907d481ffcda6d121b0c8e33f2e85fbce9265e1090edc033
+
 # ===== 其他命名空间示例（取消注释即可生效） =====
 # [another-ns]
 # nginx:1.28.3-alpine
