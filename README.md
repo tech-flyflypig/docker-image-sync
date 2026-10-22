@@ -27,7 +27,7 @@
 
 | 名称 | 说明 |
 | --- | --- |
-| `ALIYUN_REGISTRY` | 仓库地址，如 `registry.cn-hangzhou.aliyuncs.com` |
+| `ALIYUN_REGISTRY` | 仓库地址，如 `crpi-xxxxxxxx.cn-shanghai.personal.cr.aliyuncs.com`（控制台「访问凭证」页显示的那个域名） |
 | `ALIYUN_REGISTRY_USER` | 用户名 |
 | `ALIYUN_REGISTRY_PASSWORD` | 密码（固定密码或临时密码） |
 
@@ -88,12 +88,12 @@ ALIYUN_REGISTRY_PASSWORD
 在国内服务器上拉取，例如：
 
 ```bash
-docker pull registry.cn-hangzhou.aliyuncs.com/huayangtongxin/alpine
+docker pull crpi-dql3as9j0h3rd8yy.cn-shanghai.personal.cr.aliyuncs.com/huayangtongxin/alpine:3.24.1
 ```
 
-- `registry.cn-hangzhou.aliyuncs.com` 即 `ALIYUN_REGISTRY`
+- `crpi-dql3as9j0h3rd8yy.cn-shanghai.personal.cr.aliyuncs.com` 即 `ALIYUN_REGISTRY`（ACR 个人实例域名，控制台「访问凭证」页可查）
 - `huayangtongxin` 即 `images.txt` 里 `[]` 中填写的命名空间
-- `alpine` 即阿里云仓库中显示的镜像名
+- `alpine:3.24.1` 即阿里云仓库中显示的镜像名和 tag
 
 ### 5. 多命名空间
 
