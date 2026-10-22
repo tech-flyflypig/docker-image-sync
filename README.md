@@ -3,12 +3,14 @@
 使用 GitHub Action 把国外的 Docker 镜像转存到阿里云容器镜像服务（ACR），国内服务器直接从阿里云拉取，免费、无需自己维护机器。
 
 - 支持 Docker Hub、gcr.io、ghcr.io、quay.io、k8s.io 等任意仓库
-- 支持 40GB 级的大镜像（runner 自带约 88G 可用空间，每个镜像搬完立即释放）
+- 用 skopeo 在仓库之间直接搬 blob，不落本地镜像，40GB 级镜像也不占磁盘
+- **保留多架构 manifest list**（`--all`），arm64 / amd64 都能从阿里云拉到
+- 目标已存在且 digest 一致时**自动跳过**，重复运行不浪费带宽
 - 一次运行可推送到**多个阿里云命名空间**，命名空间在 `images.txt` 里按段落/按行指定
 - 使用阿里云官方线路，国内拉取速度快
 
 ```
-上游镜像仓库  →  GitHub Action Runner（pull / tag）  →  阿里云 ACR  →  国内服务器 pull
+上游镜像仓库  →  GitHub Action Runner（skopeo copy）  →  阿里云 ACR  →  国内服务器 pull
 ```
 
 ## 使用方式
@@ -123,13 +125,15 @@ golang:1.22-alpine
 
 ### 6. 多架构
 
-需要在 `images.txt` 中用 `--platform=xxxxx` 手动指定架构，指定后的架构会以前缀的形式放在镜像名前面：
+**默认就是多架构**：`images.txt` 里不写 `--platform` 时，用 `skopeo copy --all` 把整份 manifest list 一起搬，amd64 / arm64 等都能从阿里云拉取，`docker pull` 会自动按机器架构选。
+
+只有在**只想保留某一个架构**（比如省空间、或者上游镜像特别大）时才写 `--platform`：
 
 ```ini
---platform=linux/amd64 nginx:1.28.3-alpine
+--platform=linux/arm64 nginx:1.28.3-alpine
 ```
 
-推送结果是 `linux_amd64_nginx:1.28.3-alpine`。注意这是把**该架构的单个镜像**另存一份，不是多架构 manifest（不会自动选架构）。
+推送结果是 `linux_arm64_nginx:1.28.3-alpine`，单一架构、体积更小。也支持 `linux/arm/v7` 这种带 variant 的写法。
 
 ![](doc/多架构.png)
 
@@ -168,14 +172,14 @@ on:
 
 ```
 plan job    →  解析 images.txt，做命名空间校验/重名检测，输出 matrix
-sync job ×N →  每个镜像一个 runner，各自清理磁盘 + pull/tag/push
+sync job ×N →  每个镜像一个 runner，skopeo 比对 digest 后 copy
 ```
 
 带来的好处：
 
 - 20 个镜像从「一个接一个」变成「同时进行」，整体耗时取决于最慢的那个
 - 某个镜像失败只让那一个 job 变红，其它镜像照常完成，Actions 页面上一眼能看出是哪个
-- 每个 job 用独立 runner，磁盘互不挤占；某个镜像特别大也不会拖累其他镜像
+- 每个 job 用独立 runner，互不影响
 
 两个可调项在 `.github/workflows/docker.yaml` 的 `sync` job 里：
 
@@ -193,6 +197,7 @@ bash .github/scripts/plan.sh
 
 ## 常见问题
 
-- **拉取失败 `invalid reference format`**：多半是 `images.txt` 里多了不可见字符或全角空格，删掉重输即可
+- **拉取失败 `invalid reference format`**：多半是 `images.txt` 里多了不可见字符或全角空格；plan 阶段会先报「含有非法字符」
 - **推送 403 / denied**：检查 Secrets 是否为该命名空间所属账号的凭证，以及 `ALIYUN_REGISTRY` 是否与命名空间对应
-- **磁盘不足**：run 日志里出现 `No space left on device` 时，先看 `Free disk space` 那步打印的可用空间；镜像特别大（>40G）可减少 `max-parallel`，或把镜像拆成多次运行
+- **每次都重新搬同一个镜像？** 正常情况下不会：目标 digest 与源一致会直接跳过；如果一直重复，说明上游 tag 内容真的变了，或者上一次推送被 ACR 拒绝
+- **`--platform` 和 `--all` 冲突？** 不会。写了 `--platform` 就只搬那一个架构，没写才整份 manifest list 一起搬

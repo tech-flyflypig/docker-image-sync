@@ -51,25 +51,10 @@ jobs:
       max-parallel: 5
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
-    # 现在的 ubuntu-latest 自带 /dev/root 145G、可用约 88G，
-    # 原来那套 maximize-build-space 会把根分区压到 2G，反而把 runner 自己写日志的空间挤爆
-    - name: Free disk space
-      run: |
-        echo "清理前："
-        df -h /
-        # 空间本来就够时这几条几乎无成本；真遇到小规格 runner 也能腾出十几 G
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-        docker image prune -af || true
-        echo "清理后："
-        df -h /
-        avail=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
-        echo "根分区可用: ${avail}G"
-        if [ "$avail" -lt 5 ]; then
-          echo "::error::根分区可用空间不足 5G，大镜像可能失败"
-          exit 1
-        fi
-
-    - name: Pull & Push
+    # 用 skopeo 直接在两个 registry 之间搬 blob：
+    # - 不落本地镜像，40GB 的镜像也不用先扩容磁盘
+    # - --all 保留多架构 manifest list，不再是「单架构另存一份」
+    - name: Sync image (skopeo)
       env:
         ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
         ALIYUN_REGISTRY_USER: ${{ secrets.ALIYUN_REGISTRY_USER }}
@@ -81,7 +66,7 @@ jobs:
       run: |
         set -uo pipefail
 
-        # 先确认 Secrets 都配了，比 docker login 报错更好定位
+        # 先确认 Secrets 都配了，比 skopeo 报错更好定位
         for v in ALIYUN_REGISTRY ALIYUN_REGISTRY_USER ALIYUN_REGISTRY_PASSWORD; do
             if [ -z "${!v:-}" ]; then
                 echo "::error::缺少 Secret: $v"
@@ -89,48 +74,94 @@ jobs:
             fi
         done
 
-        new_image="$ALIYUN_REGISTRY/$TARGET"
-
-        # 密码走 stdin，不出现在进程列表里
-        if ! printf '%s' "$ALIYUN_REGISTRY_PASSWORD" | docker login -u "$ALIYUN_REGISTRY_USER" --password-stdin "$ALIYUN_REGISTRY"; then
-            echo "::error::登录阿里云仓库失败，请检查 ALIYUN_REGISTRY / ALIYUN_REGISTRY_USER / ALIYUN_REGISTRY_PASSWORD"
-            exit 1
+        if ! command -v skopeo >/dev/null 2>&1; then
+            echo "runner 上没有 skopeo，安装一下"
+            sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
         fi
 
-        pull_args=()
+        # 凭据放临时 authfile，避免密码出现在命令行/进程列表
+        authfile="$RUNNER_TEMP/acr-auth.json"
+        umask 077
+        printf '{"auths":{"%s":{"auth":"%s"}}}' \
+            "$ALIYUN_REGISTRY" \
+            "$(printf '%s:%s' "$ALIYUN_REGISTRY_USER" "$ALIYUN_REGISTRY_PASSWORD" | base64 -w0)" \
+            > "$authfile"
+
+        src="docker://$IMAGE"
+        dst="docker://$ALIYUN_REGISTRY/$TARGET"
+
+        # 取「顶层 manifest / manifest list」的 digest：
+        # 注意不能用 skopeo inspect --format '{{.Digest}}'，那个会解析到当前平台的子 manifest，
+        # 多架构镜像下比到的不是 index；这里直接对 --raw 输出算 sha256。
+        raw_digest() {
+            local url="$1"; shift
+            local f
+            f="$(mktemp "$RUNNER_TEMP/manifest.XXXXXX")"
+            if skopeo inspect --retry-times 3 --raw "$@" "$url" > "$f" 2>/dev/null; then
+                sha256sum "$f" | cut -d' ' -f1
+                rm -f "$f"
+                return 0
+            fi
+            rm -f "$f"
+            return 1
+        }
+
+        # ---- 已存在且 digest 一致就跳过，省掉整次全量拉取 ----
+        src_digest="$(raw_digest "$src" || true)"
+        dst_digest="$(raw_digest "$dst" --authfile "$authfile" || true)"
+
+        echo "源 digest: ${src_digest:-<获取失败>}"
+        echo "目标 digest: ${dst_digest:-<不存在或获取失败>}"
+
+        if [ -n "$src_digest" ] && [ -n "$dst_digest" ] && [ "$src_digest" = "$dst_digest" ]; then
+            echo "目标已是最新，跳过: $dst"
+            {
+                echo "### ⏭️ $IMAGE"
+                echo ""
+                echo "- 已存在且 digest 一致，跳过"
+                echo "- 目标: \`$ALIYUN_REGISTRY/$TARGET\`"
+                echo "- digest: \`$src_digest\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+        fi
+
+        # ---- 复制 ----
+        copy_args=(--authfile "$authfile" --retry-times 3)
+
         if [ -n "${PLATFORM:-}" ]; then
-            pull_args=(--platform "$PLATFORM")
-            echo "docker pull --platform $PLATFORM $IMAGE"
+            # 指定架构：只取该架构的单个镜像（目标名已由 plan 加上架构前缀）
+            os="${PLATFORM%%/*}"
+            rest="${PLATFORM#*/}"
+            arch="${rest%%/*}"
+            variant=""
+            if [ "$rest" != "$arch" ]; then
+                variant="${rest#*/}"
+            fi
+            copy_args+=(--override-os "$os" --override-arch "$arch")
+            if [ -n "$variant" ]; then
+                copy_args+=(--override-variant "$variant")
+            fi
+            mode="单架构 $PLATFORM"
         else
-            echo "docker pull $IMAGE"
+            # 不指定架构：整份 manifest list 一起搬，arm64/amd64 都能拉
+            copy_args+=(--all)
+            mode="多架构（--all）"
         fi
 
-        if ! docker pull "${pull_args[@]}" "$IMAGE"; then
-            echo "::error::拉取失败: $IMAGE"
+        echo "skopeo copy ${copy_args[*]} $src $dst"
+        if ! skopeo copy "${copy_args[@]}" "$src" "$dst"; then
+            echo "::error::搬运失败: $IMAGE -> $ALIYUN_REGISTRY/$TARGET"
             exit 1
         fi
-
-        echo "docker tag $IMAGE $new_image"
-        if ! docker tag "$IMAGE" "$new_image"; then
-            echo "::error::打标签失败: $new_image"
-            exit 1
-        fi
-
-        echo "docker push $new_image"
-        if ! docker push "$new_image"; then
-            echo "::error::推送失败: $new_image"
-            exit 1
-        fi
-
-        # 及时释放空间，让 40GB 级别的大镜像也能搬
-        docker rmi "$IMAGE" || true
-        docker rmi "$new_image" || true
 
         {
-            echo "### $IMAGE"
+            echo "### ✅ $IMAGE"
             echo ""
-            echo "- 目标: \`$new_image\`"
-            if [ -n "${PLATFORM:-}" ]; then
-                echo "- 架构: \`$PLATFORM\`"
+            echo "- 目标: \`$ALIYUN_REGISTRY/$TARGET\`"
+            echo "- 模式: $mode"
+            if [ -n "$src_digest" ]; then
+                echo "- digest: \`$src_digest\`"
             fi
         } >> "$GITHUB_STEP_SUMMARY"
+
+        rm -f "$authfile"
