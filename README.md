@@ -1,4 +1,4 @@
-# Docker Images Pusher
+# Docker Image Sync
 
 使用 GitHub Action 把国外的 Docker 镜像转存到阿里云容器镜像服务（ACR），国内服务器直接从阿里云拉取，免费、无需自己维护机器。
 

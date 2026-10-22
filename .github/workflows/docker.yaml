@@ -1,4 +1,4 @@
-name: Docker
+name: Docker Image Sync
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ permissions:
 jobs:
 
   build:
-    name: Pull
+    name: Sync
     runs-on: ubuntu-latest
     # 大镜像 + 逐个拉取，给一个明确上限，避免卡死 6 小时
     timeout-minutes: 350
