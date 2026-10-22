@@ -200,4 +200,5 @@ bash .github/scripts/plan.sh
 - **拉取失败 `invalid reference format`**：多半是 `images.txt` 里多了不可见字符或全角空格；plan 阶段会先报「含有非法字符」
 - **推送 403 / denied**：检查 Secrets 是否为该命名空间所属账号的凭证，以及 `ALIYUN_REGISTRY` 是否与命名空间对应
 - **每次都重新搬同一个镜像？** 正常情况下不会：目标 digest 与源一致会直接跳过；如果一直重复，说明上游 tag 内容真的变了，或者上一次推送被 ACR 拒绝
+- **`denied: unknown manifest class`**：源镜像带了 buildx 的 attestation 清单（`os=unknown`），阿里云 ACR 不接受这种清单。工具会自动降级：按架构逐个复制，再用 `docker buildx imagetools create` 重建一份干净的 manifest list，最终的镜像依然多架构可用
 - **`--platform` 和 `--all` 冲突？** 不会。写了 `--platform` 就只搬那一个架构，没写才整份 manifest list 一起搬

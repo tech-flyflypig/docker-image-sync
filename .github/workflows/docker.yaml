@@ -51,6 +51,9 @@ jobs:
       max-parallel: 5
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
     # 用 skopeo 直接在两个 registry 之间搬 blob：
     # - 不落本地镜像，40GB 的镜像也不用先扩容磁盘
     # - --all 保留多架构 manifest list，不再是「单架构另存一份」
@@ -88,7 +91,8 @@ jobs:
             > "$authfile"
 
         src="docker://$IMAGE"
-        dst="docker://$ALIYUN_REGISTRY/$TARGET"
+        dst_ref="$ALIYUN_REGISTRY/$TARGET"
+        dst="docker://$dst_ref"
 
         # 取「顶层 manifest / manifest list」的 digest：
         # 注意不能用 skopeo inspect --format '{{.Digest}}'，那个会解析到当前平台的子 manifest，
@@ -141,17 +145,66 @@ jobs:
             if [ -n "$variant" ]; then
                 copy_args+=(--override-variant "$variant")
             fi
+
+            echo "skopeo copy ${copy_args[*]} $src $dst"
+            if ! skopeo copy "${copy_args[@]}" "$src" "$dst"; then
+                echo "::error::搬运失败: $IMAGE -> $dst_ref"
+                exit 1
+            fi
             mode="单架构 $PLATFORM"
         else
-            # 不指定架构：整份 manifest list 一起搬，arm64/amd64 都能拉
-            copy_args+=(--all)
-            mode="多架构（--all）"
-        fi
+            # 不指定架构：整份 manifest list 一起搬。
+            # 但 buildx 构建的镜像会带 attestation 清单（config 为 application/vnd.oci.empty.v1+json），
+            # 阿里云 ACR 会以「unknown manifest class」为由拒绝，所以先探测再决定策略。
+            index_file="$(mktemp "$RUNNER_TEMP/index.XXXXXX")"
+            att=0
+            platforms=()
+            if skopeo inspect --retry-times 3 --raw "$src" > "$index_file" 2>/dev/null; then
+                info="$(python3 "$GITHUB_WORKSPACE/.github/scripts/index_platforms.py" "$index_file")"
+                att="$(printf '%s\n' "$info" | awk -F'|' '$1=="ATT"{print $2; exit}')"
+                while IFS='|' read -r tag os arch variant dg; do
+                    [ "$tag" = "PF" ] || continue
+                    platforms+=("$os|$arch|$variant|$dg")
+                done <<< "$info"
+            fi
+            rm -f "$index_file"
 
-        echo "skopeo copy ${copy_args[*]} $src $dst"
-        if ! skopeo copy "${copy_args[@]}" "$src" "$dst"; then
-            echo "::error::搬运失败: $IMAGE -> $ALIYUN_REGISTRY/$TARGET"
-            exit 1
+            if [ "${att:-0}" -gt 0 ] && [ "${#platforms[@]}" -gt 0 ]; then
+                echo "源镜像带 $att 个 attestation 清单，ACR 不接受，改为按架构复制后重建 index"
+                # buildx 走 docker 配置的凭据，这里补一次登录
+                if ! printf '%s' "$ALIYUN_REGISTRY_PASSWORD" | docker login -u "$ALIYUN_REGISTRY_USER" --password-stdin "$ALIYUN_REGISTRY" >/dev/null; then
+                    echo "::error::docker login 失败（重建 index 需要）"
+                    exit 1
+                fi
+
+                repo="${IMAGE%%@*}"
+                refs=()
+                for p in "${platforms[@]}"; do
+                    IFS='|' read -r os arch variant dg <<< "$p"
+                    if [ -z "${dg:-}" ]; then continue; fi
+                    echo "复制 ${os}/${arch} ${dg}"
+                    if ! skopeo copy --authfile "$authfile" --retry-times 3 "docker://$repo@$dg" "$dst"; then
+                        echo "::error::复制 ${os}/${arch} 失败: $dg"
+                        exit 1
+                    fi
+                    refs+=("$dst_ref@$dg")
+                done
+
+                echo "docker buildx imagetools create -t $dst_ref ${refs[*]}"
+                if ! docker buildx imagetools create -t "$dst_ref" "${refs[@]}"; then
+                    echo "::error::重建 manifest list 失败: $dst_ref"
+                    exit 1
+                fi
+                mode="多架构（剔除 ${att} 个 attestation 后重建，${#refs[@]} 个架构）"
+            else
+                copy_args+=(--all)
+                echo "skopeo copy ${copy_args[*]} $src $dst"
+                if ! skopeo copy "${copy_args[@]}" "$src" "$dst"; then
+                    echo "::error::搬运失败: $IMAGE -> $dst_ref"
+                    exit 1
+                fi
+                mode="多架构（--all）"
+            fi
         fi
 
         {
