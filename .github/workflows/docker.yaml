@@ -154,9 +154,33 @@ jobs:
             fi
 
             # 这里要拿「该架构子 manifest」的 digest 来比：
-            # 源是 index、目标是单架构 manifest，两者顶层 digest 永远不同，
-            # 直接用顶层 digest 比会导致每次运行都重搬。
-            src_digest="$(raw_digest "$src" "${override_args[@]}" || true)"
+            # 源是 index、目标是单架构 manifest，顶层 digest 永远不同；
+            # 而 skopeo inspect --raw 即使带 --override-arch 仍返回顶层 index，
+            # 所以自己解析 index，取对应平台的子 manifest digest。
+            src_digest=""
+            tmp_index="$(mktemp "$RUNNER_TEMP/index.XXXXXX")"
+            if skopeo inspect --retry-times 3 --raw "$src" > "$tmp_index" 2>/dev/null; then
+                info="$(python3 "$GITHUB_WORKSPACE/.github/scripts/index_platforms.py" "$tmp_index")"
+                if printf '%s\n' "$info" | grep -q '^PF|'; then
+                    want_key="$os/$arch"
+                    if [ -n "$variant" ]; then
+                        want_key="$want_key/$variant"
+                    fi
+                    src_digest="$(printf '%s\n' "$info" | awk -F'|' -v k="$want_key" -v k2="$os/$arch" '
+                        $1 == "PF" {
+                            key = $2 "/" $3
+                            if ($4 != "") key = key "/" $4
+                            if (key == k || key == k2) { print $5; exit }
+                        }')"
+                    # index 里存的是 sha256:xxx，目标侧算出来的是纯 hex，统一去掉前缀再比
+                    src_digest="${src_digest#sha256:}"
+                else
+                    # 源不是 index，本身就是单个 manifest
+                    src_digest="$(sha256sum "$tmp_index" | cut -d' ' -f1)"
+                fi
+            fi
+            rm -f "$tmp_index"
+
             dst_digest="$(raw_digest "$dst" --authfile "$authfile" || true)"
             echo "源 digest($PLATFORM): ${src_digest:-<获取失败>}"
             echo "目标 digest: ${dst_digest:-<不存在或获取失败>}"
