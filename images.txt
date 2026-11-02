@@ -7,6 +7,8 @@ livekit/livekit-server:v1.13.1
 golang:1.22-alpine
 node:20-alpine
 --tag=6897159 zlmediakit/zlmediakit@sha256:6897159b6232375e907d481ffcda6d121b0c8e33f2e85fbce9265e1090edc033
+postgres:16-alpine
+--tag=6897159
 
 [hqtech]
 postgres:16-alpine
